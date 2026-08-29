@@ -1,0 +1,66 @@
+name: 定时爬取大厂岗位并部署到 Pages
+
+on:
+  schedule:
+    # 每 6 小时一次（UTC 时间）。北京时间为 UTC+8，即 2/8/14/20 点各跑一次。
+    - cron: '0 */6 * * *'
+  # 允许在 Actions 页面手动点「Run workflow」立即触发
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 恢复岗位详情缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            *_details_cache.json
+          key: job-details-cache-${{ github.run_id }}
+          restore-keys: |
+            job-details-cache-
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: 爬取四家岗位
+        run: python -u run_all.py
+
+      - name: 生成静态页
+        run: python build_html.py
+
+      - name: 上传 Pages 产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./deploy
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 部署到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
