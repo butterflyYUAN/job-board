@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+deploy/
+job_digest.md
+job_board.html
+jd_job_board.html
+*.log
