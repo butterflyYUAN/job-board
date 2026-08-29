@@ -186,12 +186,26 @@ def enrich_tencent_details(jobs):
         )
         page = ctx.new_page()
 
+        content_sel = (".duty, [class*='require'], "
+                       "[data-automation-id='jobPostingDescription'], #mainContent, main")
         for seq, (idx, url) in enumerate(targets, 1):
             detail = None
             for attempt in range(1, 4):   # 单岗位最多重试 3 次，规避偶发超时/段错误
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(1200)   # 等 SPA 渲染职责/要求
+                    page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                    # 等真实内容容器渲染出来再抓：careers SPA 与 Workday 慢页都靠它，
+                    # 避免原先固定等 1.2s 时页面未渲染导致抓到空、回退成残缺列表摘要
+                    try:
+                        page.wait_for_selector(content_sel, timeout=20000)
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(1000)
+                    # Workday 托管页（tencent.wd1.myworkdayjobs.com）：整段 JD 在一个容器里，
+                    # 含岗位职责 + 岗位要求 + 加分项等，直接整段取用（.duty/require 选择器不匹配该域名）
+                    wd_el = page.query_selector("[data-automation-id='jobPostingDescription']")
+                    if wd_el:
+                        detail = wd_el.inner_text().strip()
+                        break
                     # 主策略：精确 class（.duty / 含 require 的容器）
                     duty_el = page.query_selector(".duty")
                     duty = duty_el.inner_text().strip() if duty_el else ""
