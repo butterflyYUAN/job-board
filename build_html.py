@@ -600,13 +600,13 @@ def build_html(data, updated="", public=False):
     color_json = json.dumps(COMP_COLOR, ensure_ascii=False)
     updated_json = json.dumps(updated, ensure_ascii=False)
     js = PUBLIC_JS if public else LOCAL_JS
-    subtitle = ("腾讯 · 美团 · 字节 · 蚂蚁 — 公开快照版，由后端每 3 小时刷新，显示最近更新时间"
+    subtitle = ("腾讯 · 美团 · 字节 · 蚂蚁 — 云端每 6 小时自动更新，本页展示最近一次快照"
                 if public else
                 "腾讯 · 美团 · 字节 · 蚂蚁 — 按时间排序，重新生成可获取最新")
-    status = ("公开快照页 · 数据由后端每 3 小时刷新"
+    status = ("公开快照页 · 数据由 GitHub Actions 每 6 小时云端自动更新（点刷新只拉最新快照，不现场爬取）"
               if public else
               "本地静态快照（点击右上角「刷新」连接本地服务重新爬取）")
-    footer = ("数据来源：各公司官方招聘页 · 本页为后端每 3 小时生成的快照"
+    footer = ("数据来源：各公司官方招聘页 · 本页为云端每 6 小时自动生成的快照"
               if public else
               "数据来源：各公司官方招聘页 · 由 job_digest.md 生成本地快照")
     return (PAGE
