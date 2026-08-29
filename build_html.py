@@ -17,6 +17,9 @@ import json
 import html as _html
 import datetime
 
+# 统一使用北京时间（UTC+8），避免依赖运行机器时区（GitHub Actions 默认 UTC）
+BJ_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIGEST = os.path.join(HERE, "job_digest.md")
 OUT = os.path.join(HERE, "job_board.html")
@@ -578,7 +581,7 @@ __REFRESH_JS__
 
 def build_payload(data):
     """生成前端 payload；额外计算 is_new（发布日期==今天），用于前端标「🔥 今日新发」。"""
-    today = datetime.date.today().strftime("%Y-%m-%d")
+    today = datetime.datetime.now(BJ_TZ).strftime("%Y-%m-%d")
     payload = {}
     for c in COMP_ORDER:
         payload[c] = [
@@ -636,7 +639,7 @@ def main():
     updated = ""
     try:
         mt = os.path.getmtime(DIGEST)
-        updated = datetime.datetime.fromtimestamp(mt).strftime("%Y-%m-%d %H:%M")
+        updated = datetime.datetime.fromtimestamp(mt, tz=BJ_TZ).strftime("%Y-%m-%d %H:%M")
     except Exception:
         pass
     # 1) 本地自包含快照
