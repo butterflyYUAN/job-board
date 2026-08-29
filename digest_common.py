@@ -207,7 +207,10 @@ def write_section(digest_path, marker, section_body):
     marker 形如 "## 🟠 美团社招"（需能唯一定位本段起始的 '## ' 标题行）。
     - 若文件中已有该 marker：仅替换「本段标题 ~ 下一个 '## ' 标题（或文件尾）」之间内容，
       其余公司段保持不变（与写入顺序无关，安全）。
-    - 若没有该 marker：插到文件顶部 '# 标题' 之后；无标题则直接放最前。
+    - 若没有该 marker：**追加到文件末尾**（不插到顶部）。
+      注意：早期实现是「插到 '# 标题' 之后」，但段标题 "## 🔴 腾讯" 里的第二个 '#' 加空格
+      会被 `old.find("# ")` 命中，导致后续公司的段被插进前一段的标题行正下方、把内容挤走
+      （表现为腾讯 0 个岗位、美团暴涨到 494）。改为追加末尾即可彻底避免。
     """
     try:
         old = open(digest_path, encoding="utf-8").read()
@@ -224,13 +227,11 @@ def write_section(digest_path, marker, section_body):
         else:
             new_content = old[:idx].rstrip() + "\n" + section_body + "\n"
     else:
-        title_idx = old.find("# ")
-        if title_idx >= 0:
-            nl = old.find("\n", title_idx)
-            cut = nl if nl >= 0 else len(old)
-            new_content = old[:cut].rstrip() + "\n\n" + section_body + "\n" + old[cut:]
+        # 新段一律追加到末尾，绝不插进已有段落内部
+        if old.strip():
+            new_content = old.rstrip() + "\n\n" + section_body + "\n"
         else:
-            new_content = section_body + "\n" + old
+            new_content = section_body + "\n"
     with open(digest_path, "w", encoding="utf-8") as f:
         f.write(new_content)
     return new_content
