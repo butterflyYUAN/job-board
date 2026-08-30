@@ -91,7 +91,7 @@ def escape(s):
 # 真正的「打开/刷新即现场爬取最新」由带后端的 serve.py 提供（见 public-deploy/）。
 PUBLIC_JS = r"""
 const PUBLIC_PAGE = true;
-const AUTO_MS = 3 * 60 * 60 * 1000;   // 每 3 小时自动拉取最新快照
+const AUTO_MS = 6 * 60 * 60 * 1000;   // 每 6 小时自动拉取最新快照（与云端刷新节奏一致）
 let currentUpdated = UPDATED0;
 
 function relTime(ts) {
@@ -111,9 +111,8 @@ function showStatus() {
   const u = new Date(('' + currentUpdated).replace(/-/g, '/'));
   const stale = isNaN(u.getTime()) || (Date.now() - u.getTime()) > AUTO_MS;
   if (stale) {
-    st.innerHTML = '📌 当前为静态快照，数据更新于 <b>' + (currentUpdated || '未知')
-      + '</b>（已超过 3 小时）。本页由后端每 3 小时刷新一次；'
-      + '如需「打开即自动爬取最新」，请使用带后端的服务地址。';
+    st.innerHTML = '📌 当前为云端快照，数据更新于 <b>' + (currentUpdated || '未知')
+      + '</b>。本页由 GitHub Actions 每 6 小时云端自动更新；点「刷新」仅拉取最新快照，不现场爬取。';
   } else {
     st.innerHTML = '✅ 已是最新快照，更新于 <b>' + (currentUpdated || '未知')
       + '</b>（' + relTime(currentUpdated) + '）。';
@@ -167,7 +166,7 @@ async function doRefresh() {
 // 启动：先尝试拉取最新 json（公开环境生效；file:// 会失败则回退内置快照）
 (async function initPage() {
   if (PUBLIC_PAGE || !isFileProtocol()) {
-    try { await applyJson(await loadJson(false)); } catch (e) { /* 回退内置数据 */ }
+    try { await applyJson(await loadJson(true)); } catch (e) { /* 回退内置数据 */ }
   }
   setUpdated(UPDATED0);
   showStatus();
