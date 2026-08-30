@@ -171,7 +171,7 @@ async function doRefresh() {
   setUpdated(UPDATED0);
   showStatus();
   renderTabs(); render();
-  // 每 3 小时自动拉取一次快照；切回标签页时也静默刷新（均仅在数据更新时重绘）
+  // 每 6 小时自动拉取一次快照；切回标签页时也静默刷新（均仅在数据更新时重绘）
   setInterval(function() {
     loadJson(true).then(function(j) { applyJson(j); showStatus(); }).catch(function() {});
   }, AUTO_MS);
