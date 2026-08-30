@@ -33,11 +33,9 @@ jobs:
         with:
           path: |
             *_details_cache.json
-          # 前缀改为 jd-cache-v2：旧 job-details-cache-* 脏缓存(缺失部分岗位)不再被恢复，
-          # 首次运行改回使用仓库内提交的修正版缓存；之后每次运行再稳定复用同一前缀。
+          # 不设 restore-keys：缓存文件始终使用仓库内提交的版本（含已修正的完整 JD），
+          # 避免 actions/cache 把上一次运行的旧缓存恢复出来覆盖，导致个别岗位回退成残缺列表摘要。
           key: jd-cache-v2-${{ github.run_id }}
-          restore-keys: |
-            jd-cache-v2-
 
       - name: 安装依赖
         run: |
