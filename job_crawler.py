@@ -113,16 +113,34 @@ def fetch_tencent(max_pages=40):
     return jobs
 
 
+# 判定“抓取完整”的硬性信号：列表接口 Responsibility 永远不含这些标记，
+# 而任何渲染成功的详情页正文都含其中之一。用它来卡住“半截抓取”。
+REQ_MARKERS = ["岗位要求", "任职要求", "任职资格", "我们希望你", "加分项",
+               "Job Requirements", "Requirements", "Qualifications"]
+
+
+def _is_complete(text):
+    """详情是否完整：必须能找到“岗位要求”类标记（列表摘要绝不会有）。
+
+    只判断这一个维度即可——岗位职责通常会被 .duty 抓到，而“要求段”
+    才是半渲染/半截抓取最容易丢失的部分；只要要求段在，就视为完整。
+    """
+    if not text:
+        return False
+    return any(m in text for m in REQ_MARKERS)
+
+
 def _split_duty_req(text):
     """从岗位详情主文本切分「岗位职责/工作职责」与「岗位要求」，保留原换行。
 
     仅作为兜底：当精确 class（.duty / [class*='require']）未命中时使用，
     降低因页面结构微调导致抓取失败、回退成单行列表摘要的概率。
+    标题后可能跟换行或冒号（岗位职责：/岗位要求：），两种都兼容。
     """
     import re as _re
     res = {}
-    m_duty = _re.search(r"(?:岗位职责|工作职责)\s*\n", text)
-    m_req = _re.search(r"岗位要求\s*\n", text)
+    m_duty = _re.search(r"(?:岗位职责|工作职责|职位职责)\s*[:：]?\s*\n", text)
+    m_req = _re.search(r"(?:岗位要求|任职要求|任职资格|我们希望你|加分项)\s*[:：]?\s*\n", text)
     if m_duty and m_req:
         sd, sr = m_duty.start(), m_req.start()
         if sd < sr:
@@ -141,9 +159,16 @@ def _split_duty_req(text):
 def enrich_tencent_details(jobs):
     """用 Playwright 进入每个腾讯岗位详情页，抓取岗位职责 + 岗位要求。
 
-    性能优化：详情按 PostURL 缓存到 tencent_details_cache.json，二次及以后
-    爬取只抓取「列表里新增、缓存未命中」的岗位，刷新可秒级完成（与字节/美团一致）。
-    首次全量抓取较慢（约数百个详情页），但仅一次；之后每次只补新岗。
+    健壮性设计（根治“只显示职责、丢失岗位要求”的反复故障）：
+    1. 等真内容：用 wait_for_function 等到正文里出现「岗位要求/任职要求/岗位职责」
+       或 .duty 节点出现才抓，而不是等一个恒成立的 main/body 选择器（原写法会
+       瞬间返回、在 SPA 渲染完成前抓到空/半截）。
+    2. 完整性卡口：抓到的文本必须含“岗位要求”类标记才算成功；否则重试。
+    3. 缓存自修复：命中缓存但内容不完整（缺要求段）的，强制重新抓取，避免历史
+       某次半渲染的残缺数据被永久缓存、永远显示为“只有职责没有要求”。
+    4. 不完整不写缓存：多次重试仍不完整时，本次用整页兜底文本渲染（至少比列表
+       摘要全），但不写缓存，下一轮运行会重新抓取自愈。
+    性能优化：详情按 PostURL 缓存，二次及以后只补新增岗位，刷新可秒级完成。
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -157,12 +182,14 @@ def enrich_tencent_details(jobs):
     except Exception:
         cache = {}
 
-    # 先按 url 命中缓存复用完整描述，未命中才进浏览器
+    # 先按 url 复用“完整”缓存；命中但内容不完整（缺要求段）的视为未命中→重抓，
+    # 否则历史残缺缓存会被永久沿用。
     targets = []
     for idx, j in enumerate(jobs):
         u = j.get("url")
-        if u and cache.get(u):
-            jobs[idx]["responsibility"] = cache[u]
+        cached = cache.get(u) if u else None
+        if u and cached and _is_complete(cached):
+            jobs[idx]["responsibility"] = cached
             jobs[idx]["detail_fetched"] = True
         elif u:
             targets.append((idx, u))
@@ -172,6 +199,7 @@ def enrich_tencent_details(jobs):
 
     print(f">>> 启动浏览器抓取 {len(targets)} 个腾讯新岗位详情"
           f"（缓存命中 {len(jobs) - len(targets)} 个）...")
+    MAX_ATTEMPTS = 4
     with sync_playwright() as p:
         try:
             browser = p.chromium.launch(headless=True, channel="chrome")
@@ -186,59 +214,86 @@ def enrich_tencent_details(jobs):
         )
         page = ctx.new_page()
 
-        content_sel = (".duty, [class*='require'], "
-                       "[data-automation-id='jobPostingDescription'], #mainContent, main")
+        # 等到 JD 真正渲染：SPA 慢页常见 .duty/main 已存在但内容还没注入，
+        # 必须等到正文出现要求标记或 .duty 节点出现再抓。
+        wait_js = (
+            "() => {"
+            " if (document.querySelector(\"[data-automation-id='jobPostingDescription']\")) return true;"
+            " const m = document.querySelector('main') || document.body;"
+            " const t = m ? m.innerText : '';"
+            " return t.includes('岗位要求') || t.includes('任职要求')"
+            "   || t.includes('岗位职责') || t.includes('工作职责')"
+            "   || document.querySelector('.duty') !== null;"
+            "}"
+        )
+
         for seq, (idx, url) in enumerate(targets, 1):
-            detail = None
-            for attempt in range(1, 4):   # 单岗位最多重试 3 次，规避偶发超时/段错误
+            detail = None        # 已确认完整、可接受的结果
+            best_effort = None   # 本次最佳（可能不完整），用于实在抓不全时兜底
+            for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
                     page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                    # 等真实内容容器渲染出来再抓：careers SPA 与 Workday 慢页都靠它，
-                    # 避免原先固定等 1.2s 时页面未渲染导致抓到空、回退成残缺列表摘要
                     try:
-                        page.wait_for_selector(content_sel, timeout=20000)
+                        page.wait_for_function(wait_js, timeout=20000)
                     except Exception:
                         pass
-                    page.wait_for_timeout(1000)
-                    # Workday 托管页（tencent.wd1.myworkdayjobs.com）：整段 JD 在一个容器里，
-                    # 含岗位职责 + 岗位要求 + 加分项等，直接整段取用（.duty/require 选择器不匹配该域名）
+                    page.wait_for_timeout(800)
+
+                    # 1) Workday 托管页：整段 JD 直接取
                     wd_el = page.query_selector("[data-automation-id='jobPostingDescription']")
                     if wd_el:
-                        detail = wd_el.inner_text().strip()
-                        break
-                    # 主策略：精确 class（.duty / 含 require 的容器）
+                        txt = wd_el.inner_text().strip()
+                        if _is_complete(txt):
+                            detail = txt
+                            break
+                        best_effort = txt or best_effort
+
+                    # 2) 主站结构化：岗位职责(.duty) + 岗位要求([class*='require'])
                     duty_el = page.query_selector(".duty")
                     duty = duty_el.inner_text().strip() if duty_el else ""
-                    req = ""
+                    req_parts = []
+                    seen_req = set()
                     for el in page.query_selector_all("[class*='require']"):
                         t = el.inner_text().strip()
-                        if t.startswith("岗位要求") or "岗位要求" in t[:20]:
-                            req = t
-                            break
-                    # 兜底：精确 class 未抓全时，用主容器 inner_text 正则切分职责/要求
-                    if not duty or not req:
+                        if t and t not in seen_req:
+                            seen_req.add(t)
+                            req_parts.append(t)
+                    # 精确 class 没抓到要求段时，从整页正文正则截出要求段
+                    if not req_parts:
                         main_el = page.query_selector("main") or page.query_selector("body")
                         full_txt = main_el.inner_text().strip() if main_el else ""
                         cut = _split_duty_req(full_txt)
-                        if not duty and cut.get("duty"):
-                            duty = cut["duty"]
-                        if not req and cut.get("req"):
-                            req = cut["req"]
-                        # 仍无任何结构化字段：取主容器全文本（至少保留换行，优于单行列表摘要）
-                        if not duty and not req and full_txt:
-                            duty = full_txt
-                    if duty or req:
-                        detail = "\n\n".join([x for x in (duty, req) if x])
+                        if cut.get("req"):
+                            req_parts.append(cut["req"])
+                    structured = "\n\n".join([x for x in (duty, *req_parts) if x])
+                    if not structured:
+                        # 兜底取整页正文（含导航噪声，但要求段必然在内）
+                        main_el = page.query_selector("main") or page.query_selector("body")
+                        structured = main_el.inner_text().strip() if main_el else ""
+
+                    if _is_complete(structured):
+                        detail = structured
                         break
+                    # 不完整：保留作兜底，继续重试（多半是 SPA 还没渲染完）
+                    if not best_effort or len(structured) > len(best_effort):
+                        best_effort = structured
                 except Exception as e:
                     print(f"[WARN] 腾讯详情页第 {attempt} 次失败 ({url}): {e}")
-                    time.sleep(1.5)
+                if attempt < MAX_ATTEMPTS:
+                    time.sleep(2 if attempt == 1 else 3)
+
             if detail:
                 jobs[idx]["responsibility"] = detail
                 jobs[idx]["detail_fetched"] = True
-                cache[url] = detail
+                cache[url] = detail          # 只缓存“完整”结果
+            elif best_effort:
+                # 多次重试仍不完整：本次用整页兜底文本渲染（至少比列表摘要全），
+                # 但不写缓存，下一轮运行会重新抓取自愈。
+                jobs[idx]["responsibility"] = best_effort
+                jobs[idx]["detail_fetched"] = False
+                print(f"[WARN] 腾讯详情页 {MAX_ATTEMPTS} 次重试仍不完整，本次用兜底文本、下轮自愈 ({url})")
             else:
-                print(f"[WARN] 腾讯详情页 3 次重试均失败，回退列表摘要 ({url})")
+                print(f"[WARN] 腾讯详情页 {MAX_ATTEMPTS} 次重试均失败，回退列表摘要 ({url})")
             if seq % 10 == 0:
                 print(f">>> 已抓 {seq}/{len(targets)} 个腾讯详情")
             time.sleep(0.4)
@@ -247,8 +302,8 @@ def enrich_tencent_details(jobs):
         json.dump(cache, open(cache_path, "w", encoding="utf-8"), ensure_ascii=False)
     except Exception:
         pass
-    print(f">>> 腾讯详情抓取完成（本次新抓 {sum(1 for _,_ in targets)}；"
-          f"累计命中 {sum(1 for j in jobs if j.get('detail_fetched'))}/{len(jobs)}）")
+    n_ok = sum(1 for j in jobs if j.get("detail_fetched"))
+    print(f">>> 腾讯详情抓取完成（本次新抓 {len(targets)}；累计完整 {n_ok}/{len(jobs)}）")
     return jobs
 
 
